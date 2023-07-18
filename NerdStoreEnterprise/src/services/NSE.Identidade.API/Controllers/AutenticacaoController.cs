@@ -1,5 +1,11 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+using NSE.Identidade.API.Extensions;
 using NSE.Identidade.API.Models;
 
 namespace NSE.Identidade.API.Controllers;
@@ -10,11 +16,16 @@ public class AutenticacaoController : Controller
 {
     private readonly SignInManager<IdentityUser> _signInManager;
     private readonly UserManager<IdentityUser> _userManager;
+    private readonly AppSettings _appSettings;
 
-    public AutenticacaoController(SignInManager<IdentityUser> signInManager, UserManager<IdentityUser> userManager)
+    // IOptions: Interface que permite acessar as configurações da aplicação
+    public AutenticacaoController(SignInManager<IdentityUser> signInManager,
+                                  UserManager<IdentityUser> userManager,
+                                  IOptions<AppSettings> appSettings)
     {
         _signInManager = signInManager;
         _userManager = userManager;
+        _appSettings = appSettings.Value;
     }
 
     [HttpPost("nova-conta")]
@@ -35,7 +46,7 @@ public class AutenticacaoController : Controller
         {
             // isPersistent: Define se o cookie de autenticação será persistente ou não 
             await _signInManager.SignInAsync(usuario, false);
-            return Ok();
+            return Ok(await GerarJwt(registroViewModel.Email));
         }
 
         return BadRequest();
@@ -51,9 +62,69 @@ public class AutenticacaoController : Controller
 
         if (usuarioAutenticado.Succeeded)
         {
-            return Ok();
+            return Ok(await GerarJwt(loginViewModel.Email));
         }
 
         return BadRequest();
+    }
+
+    private async Task<LoginResponseViewModel> GerarJwt(string email)
+    {
+        var usuario = await _userManager.FindByEmailAsync(email);
+        var claims = await _userManager.GetClaimsAsync(usuario);
+        var papeisUsuario = await _userManager.GetRolesAsync(usuario);
+
+        // Sub: Define o subject do token, ou seja, quem está recebendo o token
+        claims.Add(new Claim(JwtRegisteredClaimNames.Sub, usuario.Id));
+        // Email: Define o email do usuário que está recebendo o token
+        claims.Add(new Claim(JwtRegisteredClaimNames.Email, usuario.Email));
+        // Jti: Define um id para o token
+        claims.Add(new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()));
+        // Nbf: Define a data de início de validade do token
+        claims.Add(new Claim(JwtRegisteredClaimNames.Nbf, ToUnixEpochDate(DateTime.UtcNow).ToString()));
+        // Iat: Define a data de expiração do token
+        claims.Add(new Claim(JwtRegisteredClaimNames.Iat, ToUnixEpochDate(DateTime.UtcNow).ToString(), ClaimValueTypes.Integer64));
+
+        foreach (var papel in papeisUsuario)
+        {
+            claims.Add(new Claim("role", papel));
+        }
+
+        var identityClaims = new ClaimsIdentity();
+        identityClaims.AddClaims(claims);
+
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var key = Encoding.ASCII.GetBytes(_appSettings.Secret);
+
+        var token = tokenHandler.CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = _appSettings.Emissor,
+            Audience = _appSettings.ValidoEm,
+            Subject = identityClaims,
+            Expires = DateTime.UtcNow.AddHours(_appSettings.ExpiracaoHoras),
+            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+        });
+
+        var encodedToken = tokenHandler.WriteToken(token);
+
+        var response = new LoginResponseViewModel
+        {
+            TokenDeAcesso = encodedToken,
+            ExpiracaoToken = TimeSpan.FromHours(_appSettings.ExpiracaoHoras).TotalSeconds,
+            UsuarioToken = new UsuarioTokenViewModel
+            {
+                Id = usuario.Id,
+                Email = usuario.Email,
+                Claims = claims.Select(c => new UsuarioClaimViewModel { Tipo = c.Type, Valor = c.Value })
+            }
+        };
+
+        return response;
+    }
+
+    private static long ToUnixEpochDate(DateTime date)
+    {
+        // Retorna a data em segundos desde 01/01/1970
+        return (long)Math.Round((date.ToUniversalTime() - new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero)).TotalSeconds);
     }
 }
