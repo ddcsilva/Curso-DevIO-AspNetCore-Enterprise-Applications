@@ -82,6 +82,15 @@ public class AutenticacaoController : MainController
     {
         var usuario = await _userManager.FindByEmailAsync(email);
         var claims = await _userManager.GetClaimsAsync(usuario);
+
+        var identityClaims = await ObterClaimsUsuario(claims, usuario);
+        var encodedToken = CodificarToken(identityClaims);
+
+        return ObterRespostaToken(encodedToken, usuario, claims);
+    }
+
+    private async Task<ClaimsIdentity> ObterClaimsUsuario(ICollection<Claim> claims, IdentityUser usuario)
+    {
         var papeisUsuario = await _userManager.GetRolesAsync(usuario);
 
         // Sub: Define o subject do token, ou seja, quem está recebendo o token
@@ -103,6 +112,11 @@ public class AutenticacaoController : MainController
         var identityClaims = new ClaimsIdentity();
         identityClaims.AddClaims(claims);
 
+        return identityClaims;
+    }
+
+    private string CodificarToken(ClaimsIdentity identityClaims)
+    {
         var tokenHandler = new JwtSecurityTokenHandler();
         var key = Encoding.ASCII.GetBytes(_appSettings.Secret);
 
@@ -115,9 +129,12 @@ public class AutenticacaoController : MainController
             SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
         });
 
-        var encodedToken = tokenHandler.WriteToken(token);
+        return tokenHandler.WriteToken(token);
+    }
 
-        var response = new LoginResponseViewModel
+    private LoginResponseViewModel ObterRespostaToken(string encodedToken, IdentityUser usuario, IEnumerable<Claim> claims)
+    {
+        return new LoginResponseViewModel
         {
             TokenDeAcesso = encodedToken,
             ExpiracaoToken = TimeSpan.FromHours(_appSettings.ExpiracaoHoras).TotalSeconds,
@@ -128,8 +145,6 @@ public class AutenticacaoController : MainController
                 Claims = claims.Select(c => new UsuarioClaimViewModel { Tipo = c.Type, Valor = c.Value })
             }
         };
-
-        return response;
     }
 
     private static long ToUnixEpochDate(DateTime date)
